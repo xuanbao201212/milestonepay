@@ -7,6 +7,22 @@
 
 ---
 
+## What changed after review (v2)
+
+A reviewer flagged a real lifecycle hole: if the escrowed budget was **larger** than the sum of
+the declared milestones, releasing every declared milestone used to mark the project COMPLETED —
+after which `terminate_project()` no longer applied, **stranding the leftover GEN in the
+contract**. v2 makes every funded unit recoverable:
+
+| Fix | Detail |
+|---|---|
+| **No auto-complete on release** | `release_milestone()` no longer flips the project to a terminal state, so leftover budget stays reachable. |
+| **`withdraw_unallocated(project_id)`** | The client pulls back budget that was never allocated to a milestone. The project stays ACTIVE and further milestones can still be defined against the remaining budget. |
+| **`complete_project(project_id)`** | The client closes the project once all *declared* milestones are released; the leftover (never-allocated, or declared-but-unreleased) is **paid back to the client** in the same transaction. A completed project can never strand value. |
+| **Regression test** | `test_leftover_recoverable_when_budget_exceeds_milestones` funds 1000, declares only 600, releases all 600, and asserts the remaining 400 is returned without the project becoming terminal. `test_withdraw_unallocated_keeps_project_active` covers the early-withdrawal path. |
+
+---
+
 ## Why GenLayer
 
 Staged payment is how real work gets funded — but someone still has to decide whether a stage was
@@ -70,6 +86,8 @@ per milestone: PENDING -> SUBMITTED -> APPROVED (releasable) | REJECTED (resubmi
 | `review_milestone(project_id, index)` | write | LLM reads the deliverable and rules |
 | `release_milestone(project_id, index)` | write | Client releases an approved stage |
 | `terminate_project(project_id)` | write | Client stops and refunds the remainder |
+| `withdraw_unallocated(project_id)` | write | Client pulls back never-allocated budget (project stays ACTIVE) |
+| `complete_project(project_id)` | write | Client closes it; leftover budget is returned in the same call |
 | `get_project` / `get_milestone` / `get_project_count` / `get_contract_balance` | view | State |
 
 ### Review prompt (the important part)
@@ -110,7 +128,7 @@ jury's cited verdict.
 
 ---
 
-## Local tests (10 passing)
+## Local tests (13 passing)
 
 ```bash
 pip install genlayer-test pytest
@@ -120,8 +138,9 @@ pytest tests/direct/ -v
 Covers: budget required to create a project, budget recorded as custody, client≠contractor,
 client-only milestone definition, milestone amounts cannot exceed the budget, contractor-only
 submission, review-requires-submission, the approved→release payout path, rejection +
-resubmission, a two-stage project reaching COMPLETED, and termination refunding the remainder
-(client-only, single-shot).
+resubmission, explicit completion, termination refunding the remainder, **and the reviewer's
+case: a budget larger than the declared milestones stays fully recoverable (both via
+`complete_project` and via early `withdraw_unallocated`)**.
 
 ---
 

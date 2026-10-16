@@ -163,7 +163,9 @@
     <div class="prog" style="margin-top:12px"><i id="dBar" style="width:0%"></i></div>
     <div class="ms-list" id="dMs"></div>
     <div class="btnrow">
-      <button class="gold" id="dTerminateBtn">Terminate project (refund remaining)</button>
+      <button class="gold" id="dWithdrawBtn">Withdraw unallocated (client)</button>
+      <button class="solid" id="dCompleteBtn">Complete project (return leftover)</button>
+      <button class="gold" id="dTerminateBtn">Terminate (refund remaining)</button>
       <div class="msg" id="dMsg"></div>
     </div>
   </div>
@@ -234,7 +236,7 @@ import { createClient } from "https://esm.sh/genlayer-js@1.1.8";
 import { testnetBradbury } from "https://esm.sh/genlayer-js@1.1.8/chains";
 
 // ---- CONFIG ------------------------------------------------------------
-const ADDR = "0x94ED13840371980A031C8f935Af0c857a5B1e5c0";
+const ADDR = "0xDFb412AD0F18A0C1443bFD8e33749F3B0894CB17";
 const REPO = "https://github.com/xuanbao201212/milestonepay";
 const EXPLORER = "https://explorer-bradbury.genlayer.com/address/" + ADDR;
 // ------------------------------------------------------------------------
@@ -307,7 +309,12 @@ async function renderDetail(p) {
   $("dMs").innerHTML = html || `<div class="empty">No milestones defined yet.</div>`;
 
   const isClient = myAddr && p.client && p.client.toLowerCase() === myAddr.toLowerCase();
-  $("dTerminateBtn").disabled = !(isClient && Number(p.state) === 0);
+  const active = Number(p.state) === 0;
+  const unallocated = Number(p.total) - Number(p.declared);
+  const allReleased = Number(p.declared) > 0 && Number(p.released) >= Number(p.declared);
+  $("dWithdrawBtn").disabled = !(isClient && active && unallocated > 0);
+  $("dCompleteBtn").disabled = !(isClient && active && allReleased);
+  $("dTerminateBtn").disabled = !(isClient && active);
   renderList();
 }
 
@@ -397,6 +404,8 @@ $("releaseBtn").addEventListener("click", () => {
   const pid = $("sPid").value, idx = $("sIdx").value;
   write("release_milestone", [BigInt(pid), BigInt(idx || 0)], $("subMsg"), "release_milestone (pays the contractor)");
 });
+$("dWithdrawBtn").addEventListener("click", () => { if (selected) write("withdraw_unallocated", [BigInt(selected)], $("dMsg"), "withdraw_unallocated (recovers never-allocated budget)"); });
+$("dCompleteBtn").addEventListener("click", () => { if (selected) write("complete_project", [BigInt(selected)], $("dMsg"), "complete_project (returns any leftover budget)"); });
 $("dTerminateBtn").addEventListener("click", () => { if (selected) write("terminate_project", [BigInt(selected)], $("dMsg"), "terminate_project (refund remaining)"); });
 
 $("reloadBtn").addEventListener("click", loadAll);
