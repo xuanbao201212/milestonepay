@@ -94,10 +94,14 @@ class MilestonePay(gl.Contract):
         return self.milestones[k]
 
     def _pay(self, to: Address, amount: u256):
-        """Send GEN out of this contract (external message, executed on finalization)."""
+        """Send GEN out of this contract (external message, executed on finalization).
+
+        The explicit ``on='finalized'`` matches the documented form for value transfers;
+        without it the message may not be emitted at all.
+        """
         if amount <= u256(0):
             return
-        _Payee(to).emit_transfer(value=amount)
+        _Payee(to).emit_transfer(value=u256(amount), on='finalized')
 
     # ------------------------------------------------------------- views ----
 
@@ -322,9 +326,9 @@ class MilestonePay(gl.Contract):
         p.released = p.released + amount
         p.approved_count = p.approved_count + u256(1)
         self._pay(p.contractor, amount)
-
-        if int(p.released) >= int(p.declared) and int(p.declared) > 0:
-            p.state = u8(1)          # COMPLETED
+        # NOTE: the project is deliberately NOT auto-completed here. Budget that was never
+        # allocated to a milestone stays recoverable through withdraw_unallocated() /
+        # complete_project() / terminate_project().
 
     @gl.public.write
     def terminate_project(self, project_id: u256):
@@ -342,3 +346,50 @@ class MilestonePay(gl.Contract):
         p.state = u8(2)              # TERMINATED
         p.paid_out = True
         self._pay(p.client, remaining)
+
+    @gl.public.write
+    def withdraw_unallocated(self, project_id: u256):
+        """Client recovers budget that was never allocated to a milestone.
+
+        Keeps the project ACTIVE, so further milestones can still be defined against the
+        remaining budget - nothing that was funded is ever trapped.
+        """
+        if project_id not in self.projects:
+            raise gl.vm.UserError("Project not found")
+        p = self.projects[project_id]
+        if self._addr_bytes(gl.message.sender_address) != self._addr_bytes(p.client):
+            raise gl.vm.UserError("Only the client can withdraw")
+        if p.state != u8(0):
+            raise gl.vm.UserError("Project is not active")
+
+        unallocated = p.total - p.declared
+        if int(unallocated) <= 0:
+            raise gl.vm.UserError("No unallocated budget to withdraw")
+
+        p.total = p.declared            # shrink the escrowed base to what is actually allocated
+        self._pay(p.client, unallocated)
+
+    @gl.public.write
+    def complete_project(self, project_id: u256):
+        """Client closes a project once every declared milestone has been released.
+
+        Any leftover budget (never-allocated funds, or funds declared but never released)
+        is paid back to the client, so a completed project can never strand value.
+        """
+        if project_id not in self.projects:
+            raise gl.vm.UserError("Project not found")
+        p = self.projects[project_id]
+        if self._addr_bytes(gl.message.sender_address) != self._addr_bytes(p.client):
+            raise gl.vm.UserError("Only the client can complete")
+        if p.state != u8(0):
+            raise gl.vm.UserError("Project is not active")
+        if int(p.declared) <= 0:
+            raise gl.vm.UserError("Project has no milestones")
+        if int(p.released) < int(p.declared):
+            raise gl.vm.UserError("Not all declared milestones have been released")
+
+        leftover = p.total - p.released
+        p.total = p.released
+        p.state = u8(1)              # COMPLETED
+        p.paid_out = True
+        self._pay(p.client, leftover)
