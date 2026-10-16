@@ -217,10 +217,107 @@ def test_full_project_completes(direct_vm, direct_deploy, direct_alice, direct_b
     direct_vm.sender = direct_alice
     contract.release_milestone(pid, 1)
 
+    # releasing does not auto-complete the project (leftover budget must stay recoverable)
     p = contract.get_project(pid)
     assert int(p["released"]) == 1000
     assert int(p["remaining"]) == 0
+    assert int(p["state"]) == 0
+
+    # the client explicitly completes it; nothing is left behind
+    contract.complete_project(pid)
+    p = contract.get_project(pid)
     assert int(p["state"]) == 1             # COMPLETED
+    assert p["paid_out"] is True
+    assert int(p["remaining"]) == 0
+
+
+# ------------------------------- 6. leftover budget is never trapped ----
+
+def test_leftover_recoverable_when_budget_exceeds_milestones(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """The reviewer's case: fund 1000, declare only 600, release it all, and the rest must come back."""
+    contract = _deploy(direct_deploy)
+    pid = _project(direct_vm, contract, direct_alice, direct_bob, budget=1000)
+    _add_ms(direct_vm, contract, direct_alice, pid, title="Stage 1", amount=400)
+    _add_ms(direct_vm, contract, direct_alice, pid, title="Stage 2", amount=200)
+    p = contract.get_project(pid)
+    assert int(p["total"]) == 1000
+    assert int(p["declared"]) == 600          # 400 GEN never allocated
+
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>delivered</html>"})
+    direct_vm.mock_llm(r".*", {"approved": True, "reason": "Meets the criteria.", "confidence": "high"})
+
+    _submit(direct_vm, contract, direct_bob, pid, index=0)
+    contract.review_milestone(pid, 0)
+    direct_vm.sender = direct_alice
+    contract.release_milestone(pid, 0)
+
+    _submit(direct_vm, contract, direct_bob, pid, index=1)
+    contract.review_milestone(pid, 1)
+    direct_vm.sender = direct_alice
+    contract.release_milestone(pid, 1)
+
+    # every declared milestone is released, but 400 GEN of budget is still under custody
+    p = contract.get_project(pid)
+    assert int(p["released"]) == 600
+    assert int(p["remaining"]) == 400
+    assert int(p["state"]) == 0                # NOT trapped in a terminal state
+
+    # the client closes the project and the leftover budget is returned
+    contract.complete_project(pid)
+    p = contract.get_project(pid)
+    assert int(p["state"]) == 1                # COMPLETED
+    assert p["paid_out"] is True
+    assert int(p["total"]) == 600              # escrow base shrunk to what was paid out
+    assert int(p["remaining"]) == 0            # nothing stranded
+
+
+def test_withdraw_unallocated_keeps_project_active(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """Unallocated budget can be pulled out early without ending the project."""
+    contract = _deploy(direct_deploy)
+    pid = _project(direct_vm, contract, direct_alice, direct_bob, budget=1000)
+    _add_ms(direct_vm, contract, direct_alice, pid, amount=300)
+
+    # a non-client cannot withdraw
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("Only the client can withdraw"):
+        contract.withdraw_unallocated(pid)
+
+    direct_vm.sender = direct_alice
+    contract.withdraw_unallocated(pid)
+    p = contract.get_project(pid)
+    assert int(p["total"]) == 300              # escrow base now matches what is allocated
+    assert int(p["declared"]) == 300
+    assert int(p["remaining"]) == 300
+    assert int(p["state"]) == 0                # still ACTIVE
+
+    # the freed capacity is gone: no unallocated budget left to withdraw
+    with direct_vm.expect_revert("No unallocated budget to withdraw"):
+        contract.withdraw_unallocated(pid)
+
+    # and the milestone can still be delivered and paid as normal
+    _submit(direct_vm, contract, direct_bob, pid, index=0)
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>work</html>"})
+    direct_vm.mock_llm(r".*", {"approved": True, "reason": "Meets criteria.", "confidence": "high"})
+    contract.review_milestone(pid, 0)
+    direct_vm.sender = direct_alice
+    contract.release_milestone(pid, 0)
+    p = contract.get_project(pid)
+    assert int(p["released"]) == 300
+    assert int(p["remaining"]) == 0
+
+
+def test_complete_requires_all_declared_released(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = _deploy(direct_deploy)
+    pid = _project(direct_vm, contract, direct_alice, direct_bob, budget=500)
+    _add_ms(direct_vm, contract, direct_alice, pid, amount=200)
+
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("Only the client can complete"):
+        contract.complete_project(pid)
+
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Not all declared milestones have been released"):
+        contract.complete_project(pid)
 
 
 # ------------------------------------------------- 5. termination ----
